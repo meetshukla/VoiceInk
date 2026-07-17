@@ -2,7 +2,7 @@ name: Sync Upstream VoiceInk
 
 on:
   schedule:
-    - cron: "17 */6 * * *"
+    - cron: "17 9 */2 * *"
   workflow_dispatch:
 
 permissions:

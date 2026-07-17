@@ -68,8 +68,12 @@ openssl req -x509 -newkey rsa:3072 -nodes -days 10950 \
   -addext "extendedKeyUsage=codeSigning" \
   >/dev/null 2>&1
 
-openssl pkcs12 -export \
-  -legacy \
+pkcs12_options=(-export)
+if openssl pkcs12 -help 2>&1 | grep -q -- "-legacy"; then
+  pkcs12_options+=(-legacy)
+fi
+
+openssl pkcs12 "${pkcs12_options[@]}" \
   -out "$temp_dir/identity.p12" \
   -inkey "$temp_dir/private-key.pem" \
   -in "$temp_dir/certificate.pem" \

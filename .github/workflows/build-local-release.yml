@@ -1,0 +1,72 @@
+name: Build Local VoiceInk
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: voiceink-local-release
+  cancel-in-progress: true
+
+jobs:
+  build-and-publish:
+    runs-on: macos-latest
+
+    steps:
+      - name: Check out VoiceInk
+        uses: actions/checkout@v4
+
+      - name: Show build environment
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Restore pinned Whisper framework
+        id: whisper-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/VoiceInk-Dependencies/whisper.cpp/build-apple/whisper.xcframework
+          key: whisper-xcframework-aa1bc0d1a6dfd70dbb9f60c11df12441e03a9075-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Build pinned Whisper framework
+        if: steps.whisper-cache.outputs.cache-hit != 'true'
+        run: |
+          dependency_root="$HOME/VoiceInk-Dependencies"
+          whisper_root="$dependency_root/whisper.cpp"
+          mkdir -p "$dependency_root"
+          git clone https://github.com/ggerganov/whisper.cpp.git "$whisper_root"
+          git -C "$whisper_root" checkout aa1bc0d1a6dfd70dbb9f60c11df12441e03a9075
+          cd "$whisper_root"
+          ./build-xcframework.sh
+
+      - name: Build local VoiceInk app
+        run: make local
+
+      - name: Package and verify app
+        run: |
+          app_path="$HOME/Downloads/VoiceInk.app"
+          test -d "$app_path"
+          bundle_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app_path/Contents/Info.plist")
+          test "$bundle_id" = "com.prakashjoshipax.VoiceInk"
+          codesign --verify --deep --strict "$app_path"
+          ditto -c -k --sequesterRsrc --keepParent "$app_path" VoiceInk-local.zip
+          shasum -a 256 VoiceInk-local.zip > VoiceInk-local.sha256
+
+      - name: Publish stable local-build release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view local-build >/dev/null 2>&1; then
+            gh release create local-build \
+              --target "$GITHUB_SHA" \
+              --title "VoiceInk Local Build" \
+              --notes "Automatically built from the latest main branch for private local use." \
+              --prerelease
+          fi
+          gh release upload local-build VoiceInk-local.zip --clobber
+          gh release upload local-build VoiceInk-local.sha256 --clobber

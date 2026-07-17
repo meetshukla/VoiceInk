@@ -11,6 +11,9 @@ readonly app_path="${VOICEINK_APP_PATH:-/Applications/VoiceInk.app}"
 readonly state_dir="${VOICEINK_UPDATER_STATE_DIR:-$HOME/Library/Application Support/VoiceInk Local Updater}"
 readonly installed_checksum_file="$state_dir/installed.sha256"
 readonly lock_dir="$state_dir/update.lock"
+readonly signing_identity="VoiceInk Local Auto Update"
+readonly signing_keychain="$HOME/Library/Keychains/VoiceInkLocalSigning.keychain-db"
+readonly signing_password_file="$state_dir/signing/keychain-password"
 
 mkdir -p "$state_dir"
 
@@ -29,6 +32,24 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 print "Checking for the latest private VoiceInk build..."
+
+if [[ ! -f "$signing_keychain" || ! -f "$signing_password_file" ]]; then
+  print -u2 "The stable VoiceInk signing identity is not configured."
+  exit 1
+fi
+
+signing_password=$(<"$signing_password_file")
+security unlock-keychain -p "$signing_password" "$signing_keychain"
+signing_hash=$(
+  security find-identity -v -p codesigning "$signing_keychain" \
+    | awk -v name="$signing_identity" 'index($0, "\"" name "\"") { print $2; exit }'
+)
+if [[ -z "$signing_hash" ]]; then
+  print -u2 "The stable VoiceInk signing identity is unavailable."
+  exit 1
+fi
+
+stable_requirement_fragment="certificate root = H\"${signing_hash:l}\""
 latest_checksum=$(curl -fsSL --retry 3 "$checksum_url" | awk 'NR == 1 { print $1 }')
 if (( ${#latest_checksum} != 64 )) || [[ "$latest_checksum" == *[^0-9a-fA-F]* ]]; then
   print -u2 "The published VoiceInk checksum is invalid."
@@ -41,8 +62,13 @@ if [[ -f "$installed_checksum_file" ]]; then
 fi
 
 if [[ -d "$app_path" && "$installed_checksum" == "$latest_checksum" ]]; then
-  print "VoiceInk is already up to date."
-  exit 0
+  installed_requirement=$(codesign -dr - "$app_path" 2>&1 || true)
+  if [[ "$installed_requirement" == *"$stable_requirement_fragment"* ]]; then
+    print "VoiceInk is already up to date."
+    exit 0
+  fi
+
+  print "The app is current but needs its stable local signature refreshed."
 fi
 
 temp_dir=$(mktemp -d "${TMPDIR%/}/voiceink-update.XXXXXX")
@@ -85,6 +111,14 @@ fi
 
 ditto "$candidate_app" "$new_app"
 xattr -cr "$new_app"
+codesign --force --sign "$signing_hash" "$new_app"
+codesign --verify --deep --strict "$new_app"
+signed_requirement=$(codesign -dr - "$new_app" 2>&1)
+if [[ "$signed_requirement" != *"$stable_requirement_fragment"* ]]; then
+  rm -rf "$new_app"
+  print -u2 "VoiceInk did not receive the expected stable signature."
+  exit 1
+fi
 
 was_running=0
 if pgrep -x "$process_name" >/dev/null 2>&1; then

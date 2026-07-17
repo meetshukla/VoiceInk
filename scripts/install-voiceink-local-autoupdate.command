@@ -4,6 +4,7 @@ set -euo pipefail
 
 script_dir="${0:A:h}"
 source_updater="$script_dir/voiceink-local-updater.sh"
+signing_setup="$script_dir/setup-voiceink-local-signing.sh"
 state_dir="$HOME/Library/Application Support/VoiceInk Local Updater"
 installed_updater="$state_dir/update.sh"
 launch_agents_dir="$HOME/Library/LaunchAgents"
@@ -16,6 +17,13 @@ if [[ ! -f "$source_updater" ]]; then
   print -u2 "Updater script not found: $source_updater"
   exit 1
 fi
+
+if [[ ! -x "$signing_setup" ]]; then
+  print -u2 "Signing setup script not found or not executable: $signing_setup"
+  exit 1
+fi
+
+"$signing_setup"
 
 mkdir -p "$state_dir" "$launch_agents_dir"
 ditto "$source_updater" "$installed_updater"

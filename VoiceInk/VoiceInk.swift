@@ -315,9 +315,6 @@ struct VoiceInkApp: App {
 
                             // Process any pending open-file request now that the main ContentView is ready.
                             if let pendingURL = appDelegate.pendingOpenFileURL {
-                                Logger(subsystem: "com.prakashjoshipax.voiceink", category: "MenuBarWindowFlow").notice(
-                                    "🧭 Processing pending media URL after main ContentView appeared. urlLastPath=\(pendingURL.lastPathComponent, privacy: .private(mask: .hash))"
-                                )
                                 NotificationCenter.default.post(
                                     name: .navigateToDestination, object: nil,
                                     userInfo: ["destination": "Transcribe Audio"])
@@ -435,8 +432,6 @@ struct VoiceInkApp: App {
 }
 
 private struct MainWindowRequestBridge: View {
-    private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "MenuBarWindowFlow")
-
     @Environment(\.openWindow) private var openWindow
     let menuBarManager: MenuBarManager
 
@@ -445,20 +440,15 @@ private struct MainWindowRequestBridge: View {
             .frame(width: 0, height: 0)
             .onReceive(NotificationCenter.default.publisher(for: .showMainWindowRequested)) { _ in
                 let existingWindow = WindowManager.shared.currentMainWindow()
-                logger.notice(
-                    "🧭 SwiftUI main-window request bridge received request. hasExistingMainWindow=\((existingWindow != nil), privacy: .public); menuBarOnly=\(self.menuBarManager.isMenuBarOnly, privacy: .public); activationPolicy=\(WindowDiagnostics.activationPolicyDescription(NSApplication.shared.activationPolicy()), privacy: .public); snapshot=\(WindowDiagnostics.windowSnapshot(), privacy: .public)"
-                )
 
                 if existingWindow == nil {
-                    menuBarManager.activateForPresentedWindow(reason: "SwiftUIBridgeCreateMainWindow")
+                    menuBarManager.activateForPresentedWindow()
                     WindowManager.shared.prepareForUserRequestedMainWindow()
                     openWindow(id: AppWindowID.main)
-                    logger.notice("🧭 SwiftUI bridge requested main window creation via openWindow.")
                 } else {
-                    menuBarManager.activateForPresentedWindow(reason: "SwiftUIBridgePresentMainWindow")
+                    menuBarManager.activateForPresentedWindow()
                     openWindow(id: AppWindowID.main)
                     WindowManager.shared.showMainWindow()
-                    logger.notice("🧭 SwiftUI bridge requested existing main window presentation.")
                 }
             }
     }

@@ -49,4 +49,4 @@ jobs:
         if: steps.sync.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh workflow run build-local-release.yml --ref main
+        run: gh workflow run --repo "${{ github.repository }}" build-local-release.yml --ref main

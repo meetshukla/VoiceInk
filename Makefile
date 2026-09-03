@@ -70,6 +70,7 @@ local: check setup
 		echo "Using ad-hoc signing (permissions may need approval after rebuilds)"; \
 	fi; \
 	xcodebuild -project VoiceInk.xcodeproj -scheme VoiceInk -configuration Release \
+		-skipPackagePluginValidation \
 		-derivedDataPath "$(LOCAL_DERIVED_DATA)" \
 		-xcconfig LocalBuild.xcconfig \
 		CODE_SIGN_IDENTITY="$$SIGNING_IDENTITY" \

@@ -71,6 +71,7 @@ local: check setup
 	fi; \
 	xcodebuild -project VoiceInk.xcodeproj -scheme VoiceInk -configuration Release \
 		-skipPackagePluginValidation \
+		-skipMacroValidation \
 		-derivedDataPath "$(LOCAL_DERIVED_DATA)" \
 		-xcconfig LocalBuild.xcconfig \
 		CODE_SIGN_IDENTITY="$$SIGNING_IDENTITY" \

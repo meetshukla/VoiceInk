@@ -101,12 +101,12 @@ final class RecorderPanelShortcutManager: ObservableObject {
 
         visibleRecorderMonitor.start(
             shortcuts: shortcuts,
-            onKeyDown: { [weak self] action, _ in
+            onShortcutDown: { [weak self] action, _ in
                 Task { @MainActor in
                     await self?.handleRecorderPanelShortcut(action)
                 }
             },
-            onKeyUp: { _, _ in }
+            onShortcutUp: { _, _ in }
         )
     }
 

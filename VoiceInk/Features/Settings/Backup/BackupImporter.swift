@@ -145,12 +145,6 @@ enum BackupImporter {
         {
             recordingShortcutManager.secondaryRecordingShortcutMode = secondaryMode
         }
-        if let middleClickEnabled = general.isMiddleClickToggleEnabled {
-            recordingShortcutManager.isMiddleClickToggleEnabled = middleClickEnabled
-        }
-        if let middleClickDelay = general.middleClickActivationDelay {
-            recordingShortcutManager.middleClickActivationDelay = middleClickDelay
-        }
         if let launch = general.launchAtLoginEnabled {
             LaunchAtLoginManager.shared.setEnabled(launch)
         }

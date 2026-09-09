@@ -33,11 +33,11 @@ final class FluidAudioStreamingProvider: StreamingTranscriptionProvider {
     private let minNewSamples = ASRConstants.minimumRequiredSamples(forSampleRate: ASRConstants.sampleRate)
 
     var stopDisposition: StreamingStopDisposition {
-        confirmationLock.lock()
-        defer { confirmationLock.unlock() }
-        return confirmedSegmentCount < minimumConfirmedSegmentsForStreamingFinalization
-            ? .useBatchFallback
-            : .finalizeStreaming
+        confirmationLock.withLock {
+            confirmedSegmentCount < minimumConfirmedSegmentsForStreamingFinalization
+                ? .useBatchFallback
+                : .finalizeStreaming
+        }
     }
 
     init(fluidAudioService: FluidAudioTranscriptionService, config: AgreementConfig = AgreementConfig()) {
@@ -69,9 +69,9 @@ final class FluidAudioStreamingProvider: StreamingTranscriptionProvider {
         audioBuffer = []
         trimmedSampleCount = 0
         lastTranscribedSampleCount = 0
-        confirmationLock.lock()
-        confirmedSegmentCount = 0
-        confirmationLock.unlock()
+        confirmationLock.withLock {
+            confirmedSegmentCount = 0
+        }
 
         startTranscriptionLoop()
 
@@ -81,9 +81,9 @@ final class FluidAudioStreamingProvider: StreamingTranscriptionProvider {
 
     func sendAudioChunk(_ data: Data) async throws {
         let samples = PCMAudioConverter.float32Samples(fromPCM16Data: data)
-        bufferLock.lock()
-        audioBuffer.append(contentsOf: samples)
-        bufferLock.unlock()
+        bufferLock.withLock {
+            audioBuffer.append(contentsOf: samples)
+        }
     }
 
     func commit() async throws {
@@ -106,10 +106,10 @@ final class FluidAudioStreamingProvider: StreamingTranscriptionProvider {
         decoderLayerCount = 0
         languageHint = nil
 
-        bufferLock.lock()
-        audioBuffer = []
-        trimmedSampleCount = 0
-        bufferLock.unlock()
+        bufferLock.withLock {
+            audioBuffer = []
+            trimmedSampleCount = 0
+        }
         agreementEngine.reset()
 
         eventsContinuation?.finish()
@@ -139,9 +139,9 @@ final class FluidAudioStreamingProvider: StreamingTranscriptionProvider {
         guard !isTranscribing else { return }
         guard let asrManager else { return }
 
-        bufferLock.lock()
-        let absoluteSampleCount = trimmedSampleCount + audioBuffer.count
-        bufferLock.unlock()
+        let absoluteSampleCount = bufferLock.withLock {
+            trimmedSampleCount + audioBuffer.count
+        }
 
         guard absoluteSampleCount - lastTranscribedSampleCount >= minNewSamples else { return }
         guard absoluteSampleCount >= minimumAudioSamples else { return }
@@ -156,15 +156,16 @@ final class FluidAudioStreamingProvider: StreamingTranscriptionProvider {
             : agreementEngine.confirmedEndTime
         let seekSample = max(0, Int(seekTime * sampleRate))
 
-        bufferLock.lock()
-        let bufferRelativeSeek = max(0, seekSample - trimmedSampleCount)
-        let sliceEnd = audioBuffer.count
-        guard bufferRelativeSeek < sliceEnd else {
-            bufferLock.unlock()
+        guard var audioSlice = bufferLock.withLock({ () -> [Float]? in
+            let bufferRelativeSeek = max(0, seekSample - trimmedSampleCount)
+            let sliceEnd = audioBuffer.count
+            guard bufferRelativeSeek < sliceEnd else {
+                return nil
+            }
+            return Array(audioBuffer[bufferRelativeSeek..<sliceEnd])
+        }) else {
             return
         }
-        var audioSlice = Array(audioBuffer[bufferRelativeSeek..<sliceEnd])
-        bufferLock.unlock()
 
         // Pad with 1s trailing silence for punctuation capture
         let trailingSilenceSamples = 16_000
@@ -199,9 +200,9 @@ final class FluidAudioStreamingProvider: StreamingTranscriptionProvider {
                 let confirmedText = agreementResult.newlyConfirmedText.trimmingCharacters(
                     in: .whitespacesAndNewlines)
                 if !confirmedText.isEmpty {
-                    confirmationLock.lock()
-                    confirmedSegmentCount += 1
-                    confirmationLock.unlock()
+                    confirmationLock.withLock {
+                        confirmedSegmentCount += 1
+                    }
                     eventsContinuation?.yield(.committed(text: confirmedText))
                 }
             }
@@ -215,11 +216,11 @@ final class FluidAudioStreamingProvider: StreamingTranscriptionProvider {
                 let safeTrimPoint = max(0, Int(newHypothesisStartTime * sampleRate))
                 let samplesToTrim = safeTrimPoint - trimmedSampleCount
                 if samplesToTrim > 0 {
-                    bufferLock.lock()
-                    let actualTrim = min(samplesToTrim, audioBuffer.count)
-                    audioBuffer.removeFirst(actualTrim)
-                    trimmedSampleCount += actualTrim
-                    bufferLock.unlock()
+                    bufferLock.withLock {
+                        let actualTrim = min(samplesToTrim, audioBuffer.count)
+                        audioBuffer.removeFirst(actualTrim)
+                        trimmedSampleCount += actualTrim
+                    }
                 }
             }
 
@@ -239,14 +240,15 @@ final class FluidAudioStreamingProvider: StreamingTranscriptionProvider {
             : agreementEngine.confirmedEndTime
         let seekSample = max(0, Int(seekTime * sampleRate))
 
-        bufferLock.lock()
-        let bufferRelativeSeek = max(0, seekSample - trimmedSampleCount)
-        guard bufferRelativeSeek < audioBuffer.count else {
-            bufferLock.unlock()
+        guard var samples = bufferLock.withLock({ () -> [Float]? in
+            let bufferRelativeSeek = max(0, seekSample - trimmedSampleCount)
+            guard bufferRelativeSeek < audioBuffer.count else {
+                return nil
+            }
+            return Array(audioBuffer[bufferRelativeSeek...])
+        }) else {
             return nil
         }
-        var samples = Array(audioBuffer[bufferRelativeSeek...])
-        bufferLock.unlock()
 
         // A short spoken tail still needs enough input for FluidAudio. Padding before
         // transcription keeps that tail instead of rejecting it for being under 300 ms.

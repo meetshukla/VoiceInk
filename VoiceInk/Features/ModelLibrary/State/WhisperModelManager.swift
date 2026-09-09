@@ -51,6 +51,44 @@ private class TaskDelegate: NSObject, URLSessionTaskDelegate {
     }
 }
 
+private final class DownloadRequestState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var task: URLSessionDownloadTask?
+    private var observation: NSKeyValueObservation?
+    private var isCancelled = false
+
+    func install(task: URLSessionDownloadTask, observation: NSKeyValueObservation) -> Bool {
+        lock.withLock {
+            guard !isCancelled else { return false }
+            self.task = task
+            self.observation = observation
+            return true
+        }
+    }
+
+    func finish() {
+        let observation = lock.withLock {
+            let observation = self.observation
+            self.observation = nil
+            task = nil
+            return observation
+        }
+        observation?.invalidate()
+    }
+
+    func cancel() {
+        let resources = lock.withLock {
+            isCancelled = true
+            let resources = (task, observation)
+            task = nil
+            observation = nil
+            return resources
+        }
+        resources.1?.invalidate()
+        resources.0?.cancel()
+    }
+}
+
 // MARK: - WhisperModelManager
 
 @MainActor
@@ -129,71 +167,81 @@ class WhisperModelManager: ObservableObject {
 
     private func downloadFileWithProgress(from url: URL, progressKey: String) async throws -> Data {
         let destinationURL = modelsDirectory.appendingPathComponent(UUID().uuidString)
+        let requestState = DownloadRequestState()
 
-        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
-            let finished = ManagedAtomic(false)
+        return try await withTaskCancellationHandler(
+            operation: {
+                try Task.checkCancellation()
+                return try await withCheckedThrowingContinuation {
+                    (continuation: CheckedContinuation<Data, Error>) in
+                    let finished = ManagedAtomic(false)
 
-            func finishOnce(_ result: Result<Data, Error>) {
-                if finished.exchange(true, ordering: .acquiring) == false {
-                    continuation.resume(with: result)
-                }
-            }
-
-            let task = URLSession.shared.downloadTask(with: url) { tempURL, response, error in
-                if let error = error {
-                    finishOnce(.failure(error))
-                    return
-                }
-
-                guard let httpResponse = response as? HTTPURLResponse,
-                    (200...299).contains(httpResponse.statusCode),
-                    let tempURL = tempURL
-                else {
-                    finishOnce(.failure(URLError(.badServerResponse)))
-                    return
-                }
-
-                do {
-                    try FileManager.default.moveItem(at: tempURL, to: destinationURL)
-                    let data = try Data(contentsOf: destinationURL, options: .mappedIfSafe)
-                    finishOnce(.success(data))
-                    try? FileManager.default.removeItem(at: destinationURL)
-                } catch {
-                    finishOnce(.failure(error))
-                }
-            }
-
-            task.resume()
-
-            var lastUpdateTime = Date()
-            var lastProgressValue: Double = 0
-
-            let observation = task.progress.observe(\.fractionCompleted) { progress, _ in
-                let currentTime = Date()
-                let timeSinceLastUpdate = currentTime.timeIntervalSince(lastUpdateTime)
-                let currentProgress = round(progress.fractionCompleted * 100) / 100
-
-                if timeSinceLastUpdate >= 0.5 && abs(currentProgress - lastProgressValue) >= 0.01 {
-                    lastUpdateTime = currentTime
-                    lastProgressValue = currentProgress
-
-                    DispatchQueue.main.async {
-                        self.downloadProgress[progressKey] = currentProgress
+                    func finishOnce(_ result: Result<Data, Error>) {
+                        requestState.finish()
+                        if finished.exchange(true, ordering: .acquiring) == false {
+                            continuation.resume(with: result)
+                        }
                     }
-                }
-            }
 
-            Task {
-                await withTaskCancellationHandler {
-                    observation.invalidate()
-                    if finished.exchange(true, ordering: .acquiring) == false {
-                        continuation.resume(throwing: CancellationError())
+                    let task = URLSession.shared.downloadTask(with: url) { tempURL, response, error in
+                        if let error {
+                            let reportedError: Error = (error as? URLError)?.code == .cancelled
+                                ? CancellationError()
+                                : error
+                            finishOnce(.failure(reportedError))
+                            return
+                        }
+
+                        guard let httpResponse = response as? HTTPURLResponse,
+                            (200...299).contains(httpResponse.statusCode),
+                            let tempURL
+                        else {
+                            finishOnce(.failure(URLError(.badServerResponse)))
+                            return
+                        }
+
+                        do {
+                            try FileManager.default.moveItem(at: tempURL, to: destinationURL)
+                            let data = try Data(contentsOf: destinationURL, options: .mappedIfSafe)
+                            finishOnce(.success(data))
+                            try? FileManager.default.removeItem(at: destinationURL)
+                        } catch {
+                            finishOnce(.failure(error))
+                        }
                     }
-                } operation: {
-                    await withCheckedContinuation { (_: CheckedContinuation<Void, Never>) in }
+
+                    var lastUpdateTime = Date()
+                    var lastProgressValue: Double = 0
+
+                    let observation = task.progress.observe(\.fractionCompleted) { progress, _ in
+                        let currentTime = Date()
+                        let timeSinceLastUpdate = currentTime.timeIntervalSince(lastUpdateTime)
+                        let currentProgress = round(progress.fractionCompleted * 100) / 100
+
+                        if timeSinceLastUpdate >= 0.5 && abs(currentProgress - lastProgressValue) >= 0.01 {
+                            lastUpdateTime = currentTime
+                            lastProgressValue = currentProgress
+
+                            DispatchQueue.main.async {
+                                self.downloadProgress[progressKey] = currentProgress
+                            }
+                        }
+                    }
+
+                    guard requestState.install(task: task, observation: observation) else {
+                        observation.invalidate()
+                        task.cancel()
+                        finishOnce(.failure(CancellationError()))
+                        return
+                    }
+
+                    task.resume()
                 }
+            },
+            onCancel: {
+                requestState.cancel()
             }
-        }
+        )
     }
 
     func downloadModel(_ model: WhisperModel) async {
@@ -366,7 +414,7 @@ class WhisperModelManager: ObservableObject {
         let destinationURL = modelsDirectory.appendingPathComponent("\(baseName).bin")
 
         if FileManager.default.fileExists(atPath: destinationURL.path) {
-            await NotificationManager.shared.showNotification(
+            NotificationManager.shared.showNotification(
                 title: String(format: String(localized: "A model named %@.bin already exists"), baseName),
                 type: .warning,
                 duration: 4.0
@@ -383,14 +431,14 @@ class WhisperModelManager: ObservableObject {
 
             onModelsChanged?()
 
-            await NotificationManager.shared.showNotification(
+            NotificationManager.shared.showNotification(
                 title: String(format: String(localized: "Imported %@"), destinationURL.lastPathComponent),
                 type: .success,
                 duration: 3.0
             )
         } catch {
             logError("Failed to import local model", error)
-            await NotificationManager.shared.showNotification(
+            NotificationManager.shared.showNotification(
                 title: String(format: String(localized: "Failed to import model: %@"), error.localizedDescription),
                 type: .error,
                 duration: 5.0

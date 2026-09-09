@@ -69,7 +69,7 @@ class ModeShortcutManager {
         shortcutMonitor.start(
             shortcuts: shortcuts,
             interruptibleActions: Set(shortcuts.keys),
-            onKeyDown: { [weak self] action, eventTime in
+            onShortcutDown: { [weak self] action, eventTime in
                 Task { @MainActor in
                     guard let self,
                         let modeId = self.modeId(for: action)
@@ -77,7 +77,7 @@ class ModeShortcutManager {
                         return
                     }
 
-                    await self.shortcutModeHandler.handleKeyDown(
+                    await self.shortcutModeHandler.handleShortcutDown(
                         action: action,
                         eventTime: eventTime,
                         mode: self.modeProvider(),
@@ -85,7 +85,7 @@ class ModeShortcutManager {
                     )
                 }
             },
-            onKeyUp: { [weak self] action, eventTime in
+            onShortcutUp: { [weak self] action, eventTime in
                 Task { @MainActor in
                     guard let self,
                         case .mode(let modeId) = action
@@ -93,7 +93,7 @@ class ModeShortcutManager {
                         return
                     }
 
-                    await self.shortcutModeHandler.handleKeyUp(
+                    await self.shortcutModeHandler.handleShortcutUp(
                         action: action,
                         eventTime: eventTime,
                         mode: self.modeProvider(),

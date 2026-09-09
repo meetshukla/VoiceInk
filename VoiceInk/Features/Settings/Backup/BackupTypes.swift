@@ -79,8 +79,6 @@ struct GeneralBackup: Codable {
     let secondaryRecordingShortcutRawValue: String?
     let primaryRecordingShortcutModeRawValue: String?
     let secondaryRecordingShortcutModeRawValue: String?
-    let isMiddleClickToggleEnabled: Bool?
-    let middleClickActivationDelay: Int?
     let launchAtLoginEnabled: Bool?
     let isMenuBarOnly: Bool?
     let recorderType: String?

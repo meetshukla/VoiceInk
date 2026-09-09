@@ -2,8 +2,9 @@ import Foundation
 import LLMkit
 
 struct ReasoningConfig {
-    // Gemini 3.7 Flash and 3.1 Pro Preview do not support "minimal".
+    // Gemini 3.8 Flash, 3.7 Flash, and 3.1 Pro Preview do not support "minimal".
     static let geminiLowThinkingModels: Set<String> = [
+        "gemini-3.8-flash",
         "gemini-3.7-flash",
         "gemini-3.1-pro-preview",
     ]
@@ -50,9 +51,14 @@ struct ReasoningConfig {
         "openai/gpt-oss-20b",
     ]
 
-    // Cerebras GLM supports "none".
+    // Groq Qwen supports "none" for non-thinking, low-latency requests.
+    static let groqNoneReasoningModels: Set<String> = [
+        "qwen/qwen3.8-27b"
+    ]
+
+    // Cerebras Qwen supports "none" for low-latency requests.
     static let cerebrasNoneReasoningModels: Set<String> = [
-        "zai-glm-4.7"
+        "qwen-3.8-27b"
     ]
 
     static func getReasoningParameter(for provider: AIProvider, modelName: String) -> String? {
@@ -66,7 +72,11 @@ struct ReasoningConfig {
                 return "none"
             }
         case .groq:
-            if groqGPTOSSMinimumReasoningModels.contains(modelName) { return "low" }
+            if groqGPTOSSMinimumReasoningModels.contains(modelName) {
+                return "low"
+            } else if groqNoneReasoningModels.contains(modelName) {
+                return "none"
+            }
         default:
             return nil
         }

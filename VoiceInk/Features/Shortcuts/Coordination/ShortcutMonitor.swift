@@ -8,6 +8,9 @@ final class ShortcutMonitor {
         case keyDown
         case keyUp
         case flagsChanged
+        case mouseDown
+        case mouseDragged
+        case mouseUp
     }
 
     private struct ShortcutState {
@@ -18,9 +21,10 @@ final class ShortcutMonitor {
     }
 
     private var shortcuts: [ShortcutAction: ShortcutState] = [:]
+    private var suppressedMouseButtons = Set<UInt16>()
     private var interruptibleActions: Set<ShortcutAction> = []
-    private var onKeyDown: ((ShortcutAction, TimeInterval) -> Void)?
-    private var onKeyUp: ((ShortcutAction, TimeInterval) -> Void)?
+    private var onShortcutDown: ((ShortcutAction, TimeInterval) -> Void)?
+    private var onShortcutUp: ((ShortcutAction, TimeInterval) -> Void)?
     private var onShortcutInterrupted: ((ShortcutAction, TimeInterval) -> Void)?
     private var eventTap: CFMachPort?
     private var eventTapRunLoopSource: CFRunLoopSource?
@@ -36,8 +40,8 @@ final class ShortcutMonitor {
     func start(
         shortcuts: [ShortcutAction: Shortcut],
         interruptibleActions: Set<ShortcutAction> = [],
-        onKeyDown: @escaping (ShortcutAction, TimeInterval) -> Void,
-        onKeyUp: @escaping (ShortcutAction, TimeInterval) -> Void,
+        onShortcutDown: @escaping (ShortcutAction, TimeInterval) -> Void,
+        onShortcutUp: @escaping (ShortcutAction, TimeInterval) -> Void,
         onShortcutInterrupted: ((ShortcutAction, TimeInterval) -> Void)? = nil
     ) -> Bool {
         stop()
@@ -51,8 +55,8 @@ final class ShortcutMonitor {
         }
 
         self.interruptibleActions = interruptibleActions
-        self.onKeyDown = onKeyDown
-        self.onKeyUp = onKeyUp
+        self.onShortcutDown = onShortcutDown
+        self.onShortcutUp = onShortcutUp
         self.onShortcutInterrupted = onShortcutInterrupted
 
         return installEventTap()
@@ -70,9 +74,10 @@ final class ShortcutMonitor {
         }
 
         shortcuts = [:]
+        suppressedMouseButtons = []
         interruptibleActions = []
-        onKeyDown = nil
-        onKeyUp = nil
+        onShortcutDown = nil
+        onShortcutUp = nil
         onShortcutInterrupted = nil
     }
 
@@ -128,11 +133,18 @@ final class ShortcutMonitor {
             return false
         }
 
-        let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
+        let inputCode: UInt16
+        switch eventKind {
+        case .keyDown, .keyUp, .flagsChanged:
+            inputCode = UInt16(clamping: event.getIntegerValueField(.keyboardEventKeycode))
+        case .mouseDown, .mouseDragged, .mouseUp:
+            inputCode = UInt16(clamping: event.getIntegerValueField(.mouseEventButtonNumber))
+        }
+
         let modifierFlags = NSEvent.ModifierFlags(rawValue: UInt(event.flags.rawValue))
         return handleEvent(
             kind: eventKind,
-            keyCode: keyCode,
+            inputCode: inputCode,
             modifierFlags: modifierFlags,
             eventTime: ProcessInfo.processInfo.systemUptime
         )
@@ -155,20 +167,28 @@ final class ShortcutMonitor {
                 state.isInterrupted = false
                 shortcuts[action] = state
             }
-            dispatchKeyUp(for: action, eventTime: eventTime)
+            dispatchShortcutUp(for: action, eventTime: eventTime)
         }
     }
 
     private func handleEvent(
         kind: EventKind,
-        keyCode: UInt16,
+        inputCode: UInt16,
         modifierFlags: NSEvent.ModifierFlags,
         eventTime: TimeInterval
     ) -> Bool {
-        var shouldSuppress = false
+        var shouldSuppress: Bool
+        switch kind {
+        case .mouseDragged:
+            shouldSuppress = suppressedMouseButtons.contains(inputCode)
+        case .mouseUp:
+            shouldSuppress = suppressedMouseButtons.remove(inputCode) != nil
+        case .keyDown, .keyUp, .flagsChanged, .mouseDown:
+            shouldSuppress = false
+        }
 
         if kind == .keyDown {
-            handleShortcutInterruptions(keyCode: keyCode, eventTime: eventTime)
+            handleShortcutInterruptions(keyCode: inputCode, eventTime: eventTime)
         }
 
         for action in Array(shortcuts.keys) {
@@ -181,40 +201,61 @@ final class ShortcutMonitor {
                     action: action,
                     state: state,
                     kind: kind,
-                    keyCode: keyCode,
+                    keyCode: inputCode,
                     modifierFlags: modifierFlags,
                     eventTime: eventTime
                 )
                 continue
             }
 
-            let transition = transitionForKeyShortcut(
-                state.shortcut,
-                isDown: state.isDown,
-                kind: kind,
-                keyCode: keyCode,
-                modifierFlags: modifierFlags
-            )
+            let transition: ShortcutTransition
+            switch state.shortcut.kind {
+            case .key:
+                transition = transitionForKeyShortcut(
+                    state.shortcut,
+                    isDown: state.isDown,
+                    kind: kind,
+                    keyCode: inputCode,
+                    modifierFlags: modifierFlags
+                )
+            case .mouseButton:
+                transition = transitionForMouseShortcut(
+                    state.shortcut,
+                    isDown: state.isDown,
+                    kind: kind,
+                    buttonNumber: inputCode,
+                    modifierFlags: modifierFlags
+                )
+            case .modifierOnly:
+                transition = .none
+            }
 
             switch transition {
             case .none:
                 break
             case .suppress:
-                shouldSuppress = true
+                if kind != .flagsChanged {
+                    shouldSuppress = true
+                }
             case .keyDown:
                 state.isDown = true
                 state.pressedAt = eventTime
                 state.isInterrupted = false
                 shortcuts[action] = state
+                if state.shortcut.kind == .mouseButton {
+                    suppressedMouseButtons.insert(inputCode)
+                }
                 shouldSuppress = true
-                dispatchKeyDown(for: action, eventTime: eventTime)
+                dispatchShortcutDown(for: action, eventTime: eventTime)
             case .keyUp:
                 state.isDown = false
                 state.pressedAt = nil
                 state.isInterrupted = false
                 shortcuts[action] = state
-                shouldSuppress = true
-                dispatchKeyUp(for: action, eventTime: eventTime)
+                if kind != .flagsChanged {
+                    shouldSuppress = true
+                }
+                dispatchShortcutUp(for: action, eventTime: eventTime)
             }
         }
 
@@ -254,6 +295,39 @@ final class ShortcutMonitor {
                 forKeyCode: shortcut.keyCode
             )
             return currentFlags.isSuperset(of: shortcut.modifierFlags) ? .suppress : .keyUp
+        case .mouseDown, .mouseDragged, .mouseUp:
+            return .none
+        }
+    }
+
+    private func transitionForMouseShortcut(
+        _ shortcut: Shortcut,
+        isDown: Bool,
+        kind: EventKind,
+        buttonNumber: UInt16,
+        modifierFlags: NSEvent.ModifierFlags
+    ) -> ShortcutTransition {
+        switch kind {
+        case .mouseDown:
+            guard shortcut.matchesMouseEvent(
+                buttonNumber: buttonNumber,
+                modifierFlags: modifierFlags
+            ) else {
+                return .none
+            }
+
+            return isDown ? .suppress : .keyDown
+        case .mouseUp:
+            return isDown && buttonNumber == shortcut.keyCode ? .keyUp : .none
+        case .flagsChanged:
+            guard isDown else {
+                return .none
+            }
+
+            let currentFlags = Shortcut.normalizedModifierFlags(modifierFlags, forKeyCode: nil)
+            return currentFlags.isSuperset(of: shortcut.modifierFlags) ? .suppress : .keyUp
+        case .keyDown, .keyUp, .mouseDragged:
+            return .none
         }
     }
 
@@ -277,7 +351,7 @@ final class ShortcutMonitor {
                 state.pressedAt = nil
                 state.isInterrupted = false
                 shortcuts[action] = state
-                dispatchKeyUp(for: action, eventTime: eventTime)
+                dispatchShortcutUp(for: action, eventTime: eventTime)
             }
 
             return
@@ -288,7 +362,7 @@ final class ShortcutMonitor {
             state.pressedAt = eventTime
             state.isInterrupted = false
             shortcuts[action] = state
-            dispatchKeyDown(for: action, eventTime: eventTime)
+            dispatchShortcutDown(for: action, eventTime: eventTime)
         }
     }
 
@@ -314,15 +388,15 @@ final class ShortcutMonitor {
         }
     }
 
-    private func dispatchKeyDown(for action: ShortcutAction, eventTime: TimeInterval) {
-        DispatchQueue.main.async { [onKeyDown] in
-            onKeyDown?(action, eventTime)
+    private func dispatchShortcutDown(for action: ShortcutAction, eventTime: TimeInterval) {
+        DispatchQueue.main.async { [onShortcutDown] in
+            onShortcutDown?(action, eventTime)
         }
     }
 
-    private func dispatchKeyUp(for action: ShortcutAction, eventTime: TimeInterval) {
-        DispatchQueue.main.async { [onKeyUp] in
-            onKeyUp?(action, eventTime)
+    private func dispatchShortcutUp(for action: ShortcutAction, eventTime: TimeInterval) {
+        DispatchQueue.main.async { [onShortcutUp] in
+            onShortcutUp?(action, eventTime)
         }
     }
 
@@ -336,6 +410,9 @@ final class ShortcutMonitor {
         CGEventType.keyDown,
         CGEventType.keyUp,
         CGEventType.flagsChanged,
+        CGEventType.otherMouseDown,
+        CGEventType.otherMouseDragged,
+        CGEventType.otherMouseUp,
     ].reduce(CGEventMask(0)) { mask, type in
         mask | (CGEventMask(1) << Int(type.rawValue))
     }
@@ -350,6 +427,12 @@ private extension ShortcutMonitor.EventKind {
             self = .keyUp
         case .flagsChanged:
             self = .flagsChanged
+        case .otherMouseDown:
+            self = .mouseDown
+        case .otherMouseDragged:
+            self = .mouseDragged
+        case .otherMouseUp:
+            self = .mouseUp
         default:
             return nil
         }

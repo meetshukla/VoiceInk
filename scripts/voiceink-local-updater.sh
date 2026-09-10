@@ -49,6 +49,13 @@ if [[ -z "$signing_hash" ]]; then
   exit 1
 fi
 
+# Never end an active recording just to install an update. The LaunchAgent will
+# retry automatically after VoiceInk is closed.
+if pgrep -x "$process_name" >/dev/null 2>&1; then
+  print "VoiceInk is running. It will update automatically after it is closed."
+  exit 0
+fi
+
 stable_requirement_fragment="certificate root = H\"${signing_hash:l}\""
 latest_checksum=$(curl -fsSL --retry 3 "$checksum_url" | awk 'NR == 1 { print $1 }')
 if (( ${#latest_checksum} != 64 )) || [[ "$latest_checksum" == *[^0-9a-fA-F]* ]]; then
@@ -120,22 +127,10 @@ if [[ "$signed_requirement" != *"$stable_requirement_fragment"* ]]; then
   exit 1
 fi
 
-was_running=0
-if pgrep -x "$process_name" >/dev/null 2>&1; then
-  was_running=1
-  osascript -e 'tell application id "com.prakashjoshipax.VoiceInk" to quit' 2>/dev/null || true
-  for _ in {1..20}; do
-    if ! pgrep -x "$process_name" >/dev/null 2>&1; then
-      break
-    fi
-    sleep 1
-  done
-fi
-
 if pgrep -x "$process_name" >/dev/null 2>&1; then
   rm -rf "$new_app"
-  print -u2 "VoiceInk did not quit, so the installed app was not changed."
-  exit 1
+  print "VoiceInk started while its update was prepared. It will update automatically after it is closed."
+  exit 0
 fi
 
 if [[ -e "$app_path" ]]; then
@@ -153,10 +148,6 @@ fi
 checksum_temp="$state_dir/installed.sha256.$$"
 print -r -- "$latest_checksum" > "$checksum_temp"
 mv "$checksum_temp" "$installed_checksum_file"
-
-if (( was_running )); then
-  open "$app_path"
-fi
 
 print "VoiceInk was updated successfully."
 print "Your recordings, history, preferences, and Keychain were not modified."

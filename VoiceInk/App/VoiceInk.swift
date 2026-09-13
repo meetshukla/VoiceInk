@@ -153,7 +153,7 @@ struct VoiceInkApp: App {
 
         let menuBarManager = MenuBarManager()
         _menuBarManager = StateObject(wrappedValue: menuBarManager)
-        menuBarManager.configure(modelContainer: resolvedContainer, engine: engine)
+        menuBarManager.configure(engine: engine)
 
         let activeWindowService = ActiveWindowService.shared
         _activeWindowService = StateObject(wrappedValue: activeWindowService)

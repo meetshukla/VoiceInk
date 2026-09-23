@@ -165,7 +165,7 @@ struct ModeConfigFormView: View {
             Text(
                 String(
                     format: String(localized: "Are you sure you want to delete '%@'? This action cannot be undone."),
-                    draft.name))
+                    modeManager.getConfiguration(with: draft.id)?.name ?? draft.name))
         }
         .alert(
             "Default Mode Can’t Be Deleted",
@@ -397,7 +397,7 @@ struct ModeConfigFormView: View {
                                 }
                                 aiService.refreshOllamaAvailabilityInBackground()
                             default:
-                                draft.selectedAIModel = provider.defaultModel
+                                draft.selectedAIModel = warmupSnapshot.selectedModel(for: provider)
                             }
 
                             if provider != .voiceInkRefine,
@@ -460,9 +460,19 @@ struct ModeConfigFormView: View {
                     }
                 )
 
-                Picker("AI Model", selection: modelBinding) {
-                    ForEach(models, id: \.self) { model in
-                        Text(model).tag(model)
+                if provider.supportsCustomModelID {
+                    EnhancementModelPicker(
+                        title: "AI Model",
+                        provider: provider,
+                        models: models,
+                        savedCustomModelID: aiService.customModelID(for: provider),
+                        draftModel: modelBinding
+                    )
+                } else {
+                    Picker("AI Model", selection: modelBinding) {
+                        ForEach(models, id: \.self) { model in
+                            Text(model).tag(model)
+                        }
                     }
                 }
 
@@ -481,7 +491,8 @@ struct ModeConfigFormView: View {
 
         if let selectedModel = draft.selectedAIModel,
             !selectedModel.isEmpty,
-            !models.contains(selectedModel)
+            !models.contains(selectedModel),
+            !provider.supportsCustomModelID
         {
             models.insert(selectedModel, at: 0)
         }
@@ -609,21 +620,6 @@ struct ModeConfigFormView: View {
                     HStack(spacing: 6) {
                         Text("Set as default")
                         InfoTip("Default mode is used when no specific app or website matches are found.")
-                    }
-                }
-            }
-
-            if draft.outputMode.usesPasteOptions {
-                Picker(selection: $draft.autoSendKey) {
-                    ForEach(AutoSendKey.allCases, id: \.self) { key in
-                        Text(key.displayName).tag(key)
-                    }
-                } label: {
-                    HStack(spacing: 6) {
-                        Text("Auto Send")
-                        InfoTip(
-                            "Automatically presses a key combination after pasting text. Useful for chat applications or forms that use different send shortcuts."
-                        )
                     }
                 }
             }

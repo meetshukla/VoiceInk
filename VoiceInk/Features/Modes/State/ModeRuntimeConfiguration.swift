@@ -53,7 +53,6 @@ struct EnhancementRuntimeConfiguration {
 struct OutputRuntimeConfiguration {
     let mode: ModeConfig?
     let outputMode: ModeOutputMode
-    let autoSendKey: AutoSendKey
     let customCommand: ModeCustomCommand?
 }
 
@@ -186,7 +185,6 @@ enum ModeRuntimeResolver {
         return OutputRuntimeConfiguration(
             mode: mode,
             outputMode: mode?.outputMode ?? .paste,
-            autoSendKey: mode?.autoSendKey ?? .none,
             customCommand: mode?.customCommand
         )
     }
@@ -235,10 +233,10 @@ enum ModeRuntimeResolver {
 
         let models = aiService.availableModels(for: provider)
         if let configuredModelName,
-            !configuredModelName.isEmpty,
-            (models.isEmpty || models.contains(configuredModelName))
+            !configuredModelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            (provider.supportsCustomModelID || models.isEmpty || models.contains(configuredModelName))
         {
-            return configuredModelName
+            return configuredModelName.trimmingCharacters(in: .whitespacesAndNewlines)
         }
 
         if let firstModel = models.first {

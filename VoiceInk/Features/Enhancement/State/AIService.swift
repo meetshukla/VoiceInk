@@ -60,7 +60,7 @@ enum AIProvider: String, CaseIterable {
     var defaultModel: String {
         switch self {
         case .cerebras:
-            return "gpt-oss-120b"
+            return "qwen-3.8-27b"
         case .groq:
             return "openai/gpt-oss-120b"
         case .gemini:
@@ -68,7 +68,7 @@ enum AIProvider: String, CaseIterable {
         case .anthropic:
             return "claude-sonnet-5"
         case .openAI:
-            return "gpt-5.6-luna"
+            return "gpt-6-luna"
         case .mistral:
             return "mistral-small-latest"
         case .elevenLabs:
@@ -125,6 +125,8 @@ enum AIProvider: String, CaseIterable {
             ]
         case .openAI:
             return [
+                "gpt-6-luna",
+                "gpt-6-sol",
                 "gpt-5.6-luna",
                 "gpt-5.6-terra",
                 "gpt-5.6-sol",

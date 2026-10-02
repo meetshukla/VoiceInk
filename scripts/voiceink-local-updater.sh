@@ -49,6 +49,11 @@ if [[ -z "$signing_hash" ]]; then
   exit 1
 fi
 
+if pgrep -x "$process_name" >/dev/null 2>&1; then
+  print "VoiceInk is running. The updater will retry after it is closed."
+  exit 0
+fi
+
 stable_requirement_fragment="certificate root = H\"${signing_hash:l}\""
 latest_checksum=$(curl -fsSL --retry 3 "$checksum_url" | awk 'NR == 1 { print $1 }')
 if (( ${#latest_checksum} != 64 )) || [[ "$latest_checksum" == *[^0-9a-fA-F]* ]]; then
@@ -63,7 +68,9 @@ fi
 
 if [[ -d "$app_path" && "$installed_checksum" == "$latest_checksum" ]]; then
   installed_requirement=$(codesign -dr - "$app_path" 2>&1 || true)
-  if [[ "$installed_requirement" == *"$stable_requirement_fragment"* ]]; then
+  installed_local_updater=$(/usr/libexec/PlistBuddy -c 'Print :VoiceInkUsesLocalUpdater' "$app_path/Contents/Info.plist" 2>/dev/null || true)
+  installed_feed=$(/usr/libexec/PlistBuddy -c 'Print :SUFeedURL' "$app_path/Contents/Info.plist" 2>/dev/null || true)
+  if [[ "$installed_requirement" == *"$stable_requirement_fragment"* && "$installed_local_updater" == true && -z "$installed_feed" ]]; then
     print "VoiceInk is already up to date."
     exit 0
   fi
@@ -111,7 +118,11 @@ fi
 
 ditto "$candidate_app" "$new_app"
 xattr -cr "$new_app"
-codesign --force --sign "$signing_hash" "$new_app"
+# Prevent even older local builds from switching to the official trial build.
+/usr/libexec/PlistBuddy -c 'Delete :SUFeedURL' "$new_app/Contents/Info.plist" 2>/dev/null || true
+/usr/libexec/PlistBuddy -c 'Delete :VoiceInkUsesLocalUpdater' "$new_app/Contents/Info.plist" 2>/dev/null || true
+/usr/libexec/PlistBuddy -c 'Add :VoiceInkUsesLocalUpdater bool true' "$new_app/Contents/Info.plist"
+codesign --force --preserve-metadata=entitlements,flags --sign "$signing_hash" "$new_app"
 codesign --verify --deep --strict "$new_app"
 signed_requirement=$(codesign -dr - "$new_app" 2>&1)
 if [[ "$signed_requirement" != *"$stable_requirement_fragment"* ]]; then
@@ -120,22 +131,10 @@ if [[ "$signed_requirement" != *"$stable_requirement_fragment"* ]]; then
   exit 1
 fi
 
-was_running=0
-if pgrep -x "$process_name" >/dev/null 2>&1; then
-  was_running=1
-  osascript -e 'tell application id "com.prakashjoshipax.VoiceInk" to quit' 2>/dev/null || true
-  for _ in {1..20}; do
-    if ! pgrep -x "$process_name" >/dev/null 2>&1; then
-      break
-    fi
-    sleep 1
-  done
-fi
-
 if pgrep -x "$process_name" >/dev/null 2>&1; then
   rm -rf "$new_app"
-  print -u2 "VoiceInk did not quit, so the installed app was not changed."
-  exit 1
+  print "VoiceInk started while the update was prepared. The updater will retry after it is closed."
+  exit 0
 fi
 
 if [[ -e "$app_path" ]]; then
@@ -153,10 +152,6 @@ fi
 checksum_temp="$state_dir/installed.sha256.$$"
 print -r -- "$latest_checksum" > "$checksum_temp"
 mv "$checksum_temp" "$installed_checksum_file"
-
-if (( was_running )); then
-  open "$app_path"
-fi
 
 print "VoiceInk was updated successfully."
 print "Your recordings, history, preferences, and Keychain were not modified."

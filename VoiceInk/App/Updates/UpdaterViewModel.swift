@@ -5,6 +5,16 @@ import SwiftUI
 
 @MainActor
 final class UpdaterViewModel: NSObject, ObservableObject, SPUUpdaterDelegate {
+    // Source builds are installed by the local signing updater. Sparkle's
+    // official feed would replace them with a build that requires a license.
+    private static var usesLocalUpdater: Bool {
+        #if LOCAL_BUILD
+            return true
+        #else
+            return Bundle.main.object(forInfoDictionaryKey: "VoiceInkUsesLocalUpdater") as? Bool == true
+        #endif
+    }
+
     struct AvailableUpdate: Equatable {
         let versionIdentifier: String
         let displayVersion: String
@@ -32,8 +42,12 @@ final class UpdaterViewModel: NSObject, ObservableObject, SPUUpdaterDelegate {
     override init() {
         let defaults = UserDefaults.standard
         self.defaults = defaults
-        checksForUpdatesWhenDashboardAppears = Self.initialAutomaticCheckPreference(in: defaults)
+        if !Self.usesLocalUpdater {
+            checksForUpdatesWhenDashboardAppears = Self.initialAutomaticCheckPreference(in: defaults)
+        }
         super.init()
+
+        guard !Self.usesLocalUpdater else { return }
 
         let updater = updaterController.updater
 
@@ -49,6 +63,7 @@ final class UpdaterViewModel: NSObject, ObservableObject, SPUUpdaterDelegate {
     }
 
     func setChecksForUpdatesWhenDashboardAppears(_ value: Bool) {
+        guard !Self.usesLocalUpdater else { return }
         guard checksForUpdatesWhenDashboardAppears != value else { return }
 
         checksForUpdatesWhenDashboardAppears = value
@@ -62,6 +77,7 @@ final class UpdaterViewModel: NSObject, ObservableObject, SPUUpdaterDelegate {
     }
 
     func checkForUpdatesIfDue() {
+        guard !Self.usesLocalUpdater else { return }
         guard checksForUpdatesWhenDashboardAppears else { return }
 
         let updater = updaterController.updater
@@ -76,6 +92,7 @@ final class UpdaterViewModel: NSObject, ObservableObject, SPUUpdaterDelegate {
     }
 
     func checkForUpdates() {
+        guard !Self.usesLocalUpdater else { return }
         guard canCheckForUpdates else { return }
 
         // Any explicit check is interaction with the currently advertised update.
@@ -121,6 +138,7 @@ final class UpdaterViewModel: NSObject, ObservableObject, SPUUpdaterDelegate {
     }
 
     private func checkForUpdateInformationIfPossible() {
+        guard !Self.usesLocalUpdater else { return }
         let updater = updaterController.updater
         guard !updater.sessionInProgress else { return }
         updater.checkForUpdateInformation()

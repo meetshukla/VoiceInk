@@ -54,7 +54,7 @@ build: setup
 local: check setup
 	@echo "Building VoiceInk for local use (no Apple Developer certificate required)..."
 	@rm -rf "$(LOCAL_DERIVED_DATA)"
-	@SIGNING_IDENTITY="$(LOCAL_CODESIGN_IDENTITY)"; \
+	@set -e; SIGNING_IDENTITY="$(LOCAL_CODESIGN_IDENTITY)"; \
 	if [ -z "$$SIGNING_IDENTITY" ]; then \
 		SIGNING_IDENTITIES=$$(security find-identity -v -p codesigning 2>/dev/null | awk '/"Apple Development: / { print $$2 }'); \
 		SIGNING_IDENTITY_COUNT=$$(printf '%s\n' "$$SIGNING_IDENTITIES" | awk 'NF { count++ } END { print count + 0 }'); \
@@ -85,7 +85,13 @@ local: check setup
 		SWIFT_ACTIVE_COMPILATION_CONDITIONS='$$(inherited) LOCAL_BUILD' \
 		-skipPackagePluginValidation \
 		-skipMacroValidation \
-		build
+		build; \
+	APP_PATH="$(LOCAL_DERIVED_DATA)/Build/Products/Release/VoiceInk.app"; \
+	mkdir -p "$$APP_PATH/Contents/Resources"; \
+	ditto scripts/voiceink-local-updater.sh "$$APP_PATH/Contents/Resources/voiceink-local-updater.sh"; \
+	/usr/libexec/PlistBuddy -c 'Delete :SUFeedURL' "$$APP_PATH/Contents/Info.plist" 2>/dev/null || true; \
+	/usr/libexec/PlistBuddy -c 'Add :VoiceInkUsesLocalUpdater bool true' "$$APP_PATH/Contents/Info.plist"; \
+	codesign --force --preserve-metadata=entitlements,flags --sign "$$SIGNING_IDENTITY" "$$APP_PATH"
 	@APP_PATH="$(LOCAL_DERIVED_DATA)/Build/Products/Release/VoiceInk.app" && \
 	if [ -d "$$APP_PATH" ]; then \
 		echo "Copying VoiceInk.app to ~/Downloads..."; \
@@ -98,7 +104,7 @@ local: check setup
 		echo ""; \
 		echo "Limitations of local builds:"; \
 		echo "  - No iCloud dictionary sync"; \
-		echo "  - No automatic updates (pull new code and rebuild to update)"; \
+		echo "  - Updates use this fork and your local signing certificate"; \
 	else \
 		echo "Error: Could not find built VoiceInk.app at $$APP_PATH"; \
 		exit 1; \

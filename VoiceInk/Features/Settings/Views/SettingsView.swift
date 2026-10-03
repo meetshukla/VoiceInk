@@ -266,6 +266,12 @@ struct SettingsView: View {
                         showResetOnboardingAlert = true
                     }
                 }
+                if let status = updaterViewModel.localUpdateStatus {
+                    HStack {
+                        ProgressView().controlSize(.small)
+                        Text(status)
+                    }
+                }
             }
 
             Section {

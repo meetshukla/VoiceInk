@@ -138,6 +138,9 @@ struct VoiceInkApp: App {
             transcriptionModelManager: transcriptionModelManager,
             enhancementService: enhancementService
         )
+        updaterViewModel.canInstallLocalUpdate = { [weak engine] in
+            engine?.recordingState == .idle
+        }
 
         // 5. Configure circular deps
         recorderUIManager.configure(engine: engine, recorder: engine.recorder)

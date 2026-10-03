@@ -31,7 +31,9 @@ Force ad-hoc signing:
 make local LOCAL_CODESIGN_IDENTITY=-
 ```
 
-Local builds do not include iCloud dictionary sync or automatic updates. Ad-hoc builds may require macOS permissions again after rebuilding.
+Local builds do not include iCloud dictionary sync. This fork's Check for Updates and Update Available buttons install the `local-build` release from `meetshukla/VoiceInk` and sign it with the existing `VoiceInk Local Auto Update` certificate. The official Sparkle updater is disabled for local builds.
+
+Run `scripts/install-voiceink-local-autoupdate.command` once to configure the local certificate and optional background updater. The app's update button downloads and verifies the release before it quits, installs, and relaunches. Updates are blocked while recording or transcription is active. Ad-hoc builds that do not use the stable certificate may require macOS permissions again after rebuilding.
 
 ## Other Commands
 

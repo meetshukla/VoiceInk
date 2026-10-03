@@ -28,6 +28,11 @@ final class UpdaterViewModel: NSObject, ObservableObject, SPUUpdaterDelegate {
     }
 
     private let defaults: UserDefaults
+    private let localUpdater = LocalBuildUpdater()
+    var canInstallLocalUpdate: () -> Bool = { false }
+    @Published private(set) var localUpdateStatus: String?
+    private var localCheckInProgress = false
+    private var lastLocalCheckDate: Date?
     private var isUserInitiatedUpdateCheck = false
     private lazy var updaterController = SPUStandardUpdaterController(
         startingUpdater: false,
@@ -42,12 +47,13 @@ final class UpdaterViewModel: NSObject, ObservableObject, SPUUpdaterDelegate {
     override init() {
         let defaults = UserDefaults.standard
         self.defaults = defaults
-        if !Self.usesLocalUpdater {
-            checksForUpdatesWhenDashboardAppears = Self.initialAutomaticCheckPreference(in: defaults)
-        }
+        checksForUpdatesWhenDashboardAppears = Self.initialAutomaticCheckPreference(in: defaults)
         super.init()
 
-        guard !Self.usesLocalUpdater else { return }
+        if Self.usesLocalUpdater {
+            canCheckForUpdates = true
+            return
+        }
 
         let updater = updaterController.updater
 
@@ -63,7 +69,6 @@ final class UpdaterViewModel: NSObject, ObservableObject, SPUUpdaterDelegate {
     }
 
     func setChecksForUpdatesWhenDashboardAppears(_ value: Bool) {
-        guard !Self.usesLocalUpdater else { return }
         guard checksForUpdatesWhenDashboardAppears != value else { return }
 
         checksForUpdatesWhenDashboardAppears = value
@@ -77,8 +82,12 @@ final class UpdaterViewModel: NSObject, ObservableObject, SPUUpdaterDelegate {
     }
 
     func checkForUpdatesIfDue() {
-        guard !Self.usesLocalUpdater else { return }
         guard checksForUpdatesWhenDashboardAppears else { return }
+        if Self.usesLocalUpdater {
+            if let lastLocalCheckDate, Date().timeIntervalSince(lastLocalCheckDate) < 14400 { return }
+            checkLocalBuild(userInitiated: false)
+            return
+        }
 
         let updater = updaterController.updater
         guard !updater.sessionInProgress else { return }
@@ -92,8 +101,11 @@ final class UpdaterViewModel: NSObject, ObservableObject, SPUUpdaterDelegate {
     }
 
     func checkForUpdates() {
-        guard !Self.usesLocalUpdater else { return }
         guard canCheckForUpdates else { return }
+        if Self.usesLocalUpdater {
+            checkLocalBuild(userInitiated: true)
+            return
+        }
 
         // Any explicit check is interaction with the currently advertised update.
         // Persist it before presenting Sparkle so dismissing or closing the native
@@ -138,7 +150,10 @@ final class UpdaterViewModel: NSObject, ObservableObject, SPUUpdaterDelegate {
     }
 
     private func checkForUpdateInformationIfPossible() {
-        guard !Self.usesLocalUpdater else { return }
+        if Self.usesLocalUpdater {
+            checkLocalBuild(userInitiated: false)
+            return
+        }
         let updater = updaterController.updater
         guard !updater.sessionInProgress else { return }
         updater.checkForUpdateInformation()
@@ -147,6 +162,51 @@ final class UpdaterViewModel: NSObject, ObservableObject, SPUUpdaterDelegate {
     private func hasInteracted(with versionIdentifier: String) -> Bool {
         defaults.stringArray(forKey: DefaultsKey.interactedUpdateVersions)?
             .contains(versionIdentifier) == true
+    }
+
+    private func checkLocalBuild(userInitiated: Bool) {
+        guard !localCheckInProgress else { return }
+        localCheckInProgress = true
+        canCheckForUpdates = false
+        Task {
+            defer {
+                localCheckInProgress = false
+                canCheckForUpdates = true
+                localUpdateStatus = nil
+            }
+            do {
+                let release = try await localUpdater.latestRelease()
+                lastLocalCheckDate = Date()
+                guard localUpdater.needsUpdate(release) else {
+                    availableUpdate = nil
+                    if userInitiated {
+                        localUpdater.showMessage("VoiceInk is up to date", detail: "You are using your local build of VoiceInk \(release.version).")
+                    }
+                    return
+                }
+                availableUpdate = AvailableUpdate(versionIdentifier: release.sha256, displayVersion: release.version)
+                guard userInitiated else { return }
+                guard canInstallLocalUpdate() else {
+                    localUpdater.showMessage("Finish your recording first", detail: "Check for updates again after recording and transcription finish.")
+                    return
+                }
+                guard localUpdater.confirmInstall(release) else { return }
+                localUpdateStatus = "Downloading and verifying VoiceInk \(release.version)…"
+                try await localUpdater.prepareInstall(release)
+                guard canInstallLocalUpdate() else {
+                    localUpdater.cancelInstall()
+                    localUpdater.showMessage("Finish your recording first", detail: "The update was prepared, but VoiceInk is busy. Check for updates again when it is idle.")
+                    return
+                }
+                localUpdateStatus = "Restarting VoiceInk…"
+                NSApplication.shared.terminate(nil)
+            } catch {
+                localUpdater.cancelInstall()
+                if userInitiated {
+                    localUpdater.showMessage("VoiceInk could not update", detail: error.localizedDescription)
+                }
+            }
+        }
     }
 
     private func rememberInteraction(with versionIdentifier: String) {

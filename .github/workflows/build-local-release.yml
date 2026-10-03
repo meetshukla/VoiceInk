@@ -53,9 +53,16 @@ jobs:
           test -d "$app_path"
           bundle_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app_path/Contents/Info.plist")
           test "$bundle_id" = "com.prakashjoshipax.VoiceInk"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :VoiceInkUsesLocalUpdater' "$app_path/Contents/Info.plist")" = "true"
+          test -f "$app_path/Contents/Resources/voiceink-local-updater.sh"
+          ! /usr/libexec/PlistBuddy -c 'Print :SUFeedURL' "$app_path/Contents/Info.plist" 2>/dev/null
           codesign --verify --deep --strict "$app_path"
           ditto -c -k --sequesterRsrc --keepParent "$app_path" VoiceInk-local.zip
           shasum -a 256 VoiceInk-local.zip > VoiceInk-local.sha256
+          version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app_path/Contents/Info.plist")
+          checksum=$(awk '{ print $1 }' VoiceInk-local.sha256)
+          jq -n --arg version "$version" --arg sha256 "$checksum" --arg commit "$GITHUB_SHA" \
+            '{version: $version, sha256: $sha256, commit: $commit}' > VoiceInk-local.json
 
       - name: Publish stable local-build release
         env:
@@ -70,3 +77,4 @@ jobs:
           fi
           gh release upload local-build VoiceInk-local.zip --clobber
           gh release upload local-build VoiceInk-local.sha256 --clobber
+          gh release upload local-build VoiceInk-local.json --clobber

@@ -166,6 +166,7 @@ final class TranscriptionDelivery {
         let textToPaste = deliverableText(from: text)
         let appendSpace = UserDefaults.standard.bool(forKey: "AppendTrailingSpace")
         let pastedText = textToPaste + (appendSpace ? " " : "")
+        actions.setState(.idle)
         SoundManager.shared.playStopSound()
         await actions.dismiss()
 

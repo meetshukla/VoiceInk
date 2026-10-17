@@ -11,6 +11,7 @@ class CursorPaster {
     enum PasteResult: Equatable {
         case commandPosted
         case commandNotPosted
+        case commandPartiallyPosted
 
         var didPostPasteCommand: Bool {
             self == .commandPosted
@@ -66,34 +67,41 @@ class CursorPaster {
         let startedAt = ProcessInfo.processInfo.systemUptime
         let queueWaitMs = elapsedMilliseconds(since: requestedAt)
         let sessionID = UUID().uuidString
-        let pasteboard = NSPasteboard.general
-        let shouldRestoreClipboard = UserDefaults.standard.bool(forKey: "restoreClipboardAfterPaste")
-        let savedContents = shouldRestoreClipboard ? snapshotClipboard(from: pasteboard) : []
+        let method = PasteMethod.current()
+        let textToDeliver = method == .directTyping ? DirectTextTyper.normalizedText(text) : text
+        let pasteboard: NSPasteboard? = method.usesClipboard ? NSPasteboard.general : nil
+        let shouldRestoreClipboard = pasteboard != nil
+            && UserDefaults.standard.bool(forKey: "restoreClipboardAfterPaste")
+        let savedContents: ClipboardSnapshot
+        if let pasteboard {
+            savedContents = shouldRestoreClipboard ? snapshotClipboard(from: pasteboard) : []
 
-        guard
-            ClipboardManager.setClipboard(
-                text,
-                transient: shouldRestoreClipboard,
-                sessionID: shouldRestoreClipboard ? sessionID : nil
-            )
-        else {
-            logger.error("Failed to prepare clipboard for paste id=\(sessionID, privacy: .public)")
-            return (PasteOutcome(result: .commandNotPosted, autoLearnGeneration: nil), nil)
+            guard
+                ClipboardManager.setClipboard(
+                    textToDeliver,
+                    transient: shouldRestoreClipboard,
+                    sessionID: shouldRestoreClipboard ? sessionID : nil
+                )
+            else {
+                logger.error("Failed to prepare clipboard for paste id=\(sessionID, privacy: .public)")
+                return (PasteOutcome(result: .commandNotPosted, autoLearnGeneration: nil), nil)
+            }
+
+            await wait(prePasteDelay)
+        } else {
+            savedContents = []
         }
-
-        await wait(prePasteDelay)
 
         let application = NSWorkspace.shared.frontmostApplication
         let appIdentifier = application?.bundleIdentifier ?? "unknown"
-        let pasteResult = await postPasteCommand(sessionID: sessionID)
+        let pasteResult = await deliverText(textToDeliver, method: method, sessionID: sessionID)
         logger.notice(
-            "Paste id=\(sessionID, privacy: .public) app=\(appIdentifier, privacy: .public) commandPosted=\(pasteResult.didPostPasteCommand, privacy: .public) queueMs=\(queueWaitMs, privacy: .public) elapsedMs=\(elapsedMilliseconds(since: startedAt), privacy: .public)"
+            "Paste id=\(sessionID, privacy: .public) app=\(appIdentifier, privacy: .public) method=\(method.rawValue, privacy: .public) commandPosted=\(pasteResult.didPostPasteCommand, privacy: .public) queueMs=\(queueWaitMs, privacy: .public) elapsedMs=\(elapsedMilliseconds(since: startedAt), privacy: .public)"
         )
-
         let autoLearnGeneration: UInt64?
         if AutoLearnSettings.isEnabled {
             autoLearnGeneration = await AutoLearnService.shared.pasteDidFinish(
-                text: text,
+                text: textToDeliver,
                 processID: application?.processIdentifier,
                 commandPosted: pasteResult.didPostPasteCommand
             )
@@ -101,10 +109,10 @@ class CursorPaster {
             autoLearnGeneration = nil
         }
         let clipboardRestoreTask: Task<Void, Never>?
-        if shouldRestoreClipboard {
+        if shouldRestoreClipboard, let pasteboard {
             clipboardRestoreTask = scheduleClipboardRestore(
                 savedContents,
-                expectedText: text,
+                expectedText: textToDeliver,
                 sessionID: sessionID,
                 on: pasteboard
             )
@@ -130,11 +138,27 @@ class CursorPaster {
     }
 
     @MainActor
-    private static func postPasteCommand(sessionID: String) async -> PasteResult {
-        if PasteMethod.current() == .appleScript {
+    private static func deliverText(_ text: String, method: PasteMethod, sessionID: String) async -> PasteResult {
+        switch method {
+        case .appleScript:
             return pasteUsingAppleScript(sessionID: sessionID) ? .commandPosted : .commandNotPosted
-        } else {
+        case .standard:
             return await pasteFromClipboard(sessionID: sessionID)
+        case .directTyping:
+            // Never retry partial typing: a retry could duplicate text.
+            let result: PasteResult
+            switch await DirectTextTyper.type(text) {
+            case .posted: result = .commandPosted
+            case .notPosted: result = .commandNotPosted
+            case .partiallyPosted: result = .commandPartiallyPosted
+            }
+            if !text.isEmpty && !result.didPostPasteCommand {
+                NotificationManager.shared.showNotification(
+                    title: String(localized: "Direct Typing stopped. Check the text field before trying again. Your transcription is available in History."),
+                    type: .warning
+                )
+            }
+            return result
         }
     }
 
